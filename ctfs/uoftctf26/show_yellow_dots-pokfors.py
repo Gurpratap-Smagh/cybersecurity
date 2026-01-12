@@ -1,10 +1,9 @@
 from PIL import Image, ImageOps, ImageEnhance
-
+input_f = "your card pic"
+output_f = "output.png"
 def extract_yellow_dots(input_path, output_path):
     # 1. Open the high-res scan
     img = Image.open(input_path)
-    input_f = "your card pic"
-    output_f = "output.png"
     
     # 2. Convert to CMYK (this isolates the inks used by the printer)
     # The 3rd channel [C, M, Y, K] is the Yellow one.
